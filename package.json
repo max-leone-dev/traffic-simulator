@@ -1,0 +1,16 @@
+{
+  "name": "traffic-lab",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vite": "^8.3.0",
+    "vitest": "^4.1.11"
+  }
+}
