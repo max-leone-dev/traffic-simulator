@@ -24,6 +24,7 @@ let accumulated = 0;
 let motionSeconds = 0;
 let frameRequest = 0;
 const tickMilliseconds = 600;
+const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("App root element is missing.");
@@ -44,7 +45,8 @@ app.innerHTML = `
       </div>
       <div class="toolbar">
         <div class="ramp-box">
-          <div class="ramp-title"><strong>Shared demand ramp</strong><span id="ramp-status" aria-live="polite">Ready to run</span></div>
+          <div class="ramp-title"><strong>Shared demand ramp</strong><span id="ramp-status">Ready to run</span></div>
+          <span id="phase-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></span>
           <div class="ramp" role="progressbar" aria-label="Demand ramp progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="ramp-marker" class="ramp-marker"></span></div>
           <div class="ramp-labels"><span>Light arrivals</span><span>Heavy arrivals</span></div>
         </div>
@@ -68,6 +70,7 @@ app.innerHTML = `
 const panesRoot = app.querySelector<HTMLDivElement>("#panes")!;
 const phaseNote = app.querySelector<HTMLParagraphElement>("#phase-note")!;
 const statusText = app.querySelector<HTMLSpanElement>("#ramp-status")!;
+const phaseAnnouncement = app.querySelector<HTMLSpanElement>("#phase-announcement")!;
 const ramp = app.querySelector<HTMLDivElement>(".ramp")!;
 const marker = app.querySelector<HTMLSpanElement>("#ramp-marker")!;
 const runButton = app.querySelector<HTMLButtonElement>("#run-button")!;
@@ -158,7 +161,7 @@ function drawPane(pane: ExperimentPane, elapsedSeconds: number, tickFraction: nu
     const queueIndex = occupancy.queue.indexOf(traveler);
     const displayIndex = queueDisplayIndex.get(traveler.id);
     if (displayIndex !== undefined && displayIndex >= 2) return "";
-    const bob = travelerBob(traveler.id, elapsedSeconds, queueIndex < 0 ? 1 : 0.25);
+    const bob = reducedMotion.matches ? 0 : travelerBob(traveler.id, elapsedSeconds, queueIndex < 0 ? 1 : 0.25);
     const position = queueIndex < 0
       ? travelerPosition(edgeId, Math.min((traveler.edgeTicks + tickFraction) / edge.travelTicks, 1), bob)
       : travelerPosition(edgeId, 0, bob);
@@ -199,7 +202,7 @@ function drawPane(pane: ExperimentPane, elapsedSeconds: number, tickFraction: nu
 }
 
 function render(elapsedSeconds = motionSeconds): void {
-  const tickFraction = Math.min(accumulated / tickMilliseconds, 1);
+  const tickFraction = reducedMotion.matches ? 0 : Math.min(accumulated / tickMilliseconds, 1);
   const phase = experimentPhase(experiment);
   experiment.panes.forEach((pane, index) => {
     paneContents[index].innerHTML = drawPane(pane, elapsedSeconds, tickFraction, phase === "complete");
@@ -218,6 +221,18 @@ function render(elapsedSeconds = motionSeconds): void {
         : phase === "drain"
           ? "Demand stopped · finishing trips"
           : "Run complete";
+  const announcement = phase === "complete"
+    ? "Run complete"
+    : !running && (experiment.panes[0]?.simulation.tick ?? 0) === 0
+      ? "Ready to run"
+      : !running
+        ? "Paused"
+        : phase === "ramp"
+          ? "Ramping up"
+          : phase === "hold"
+            ? "Holding at heavy demand"
+            : "Demand stopped; finishing trips";
+  if (phaseAnnouncement.textContent !== announcement) phaseAnnouncement.textContent = announcement;
   runButton.textContent = running ? "Ⅱ Pause" : phase === "complete" ? "▶ Run again" : "▶ Run";
 }
 

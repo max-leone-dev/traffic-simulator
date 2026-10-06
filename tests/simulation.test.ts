@@ -58,6 +58,23 @@ describe("simulation inputs and capacity", () => {
     expect(state.occupancy.get("a-b")?.queue).toHaveLength(1);
   });
 
+  it("completes a zero-edge trip immediately without leaving a stranded traveler", () => {
+    const state = createSimulationState(oneEdgeGraph);
+    const event: DemandEvent = {
+      id: "already-there", tick: 0, origin: "a", destination: "a", neutralAt: 0.4, upsetAt: 0.8,
+    };
+    const config = { ...DEFAULT_CONFIG, rampTicks: 1, holdTicks: 0 };
+
+    stepSimulation(state, oneEdgeGraph, [event], dijkstra, config);
+
+    expect(state.metrics.completedTrips).toEqual([{ id: event.id, departedAt: 0, completedAt: 0 }]);
+    expect(state.metrics.completedDuringDemand).toBe(1);
+    expect(averageTripTime(state)).toBe(0);
+    expect(state.travelers.size).toBe(0);
+    expect(state.occupancy.get("a-b")).toEqual({ active: [], queue: [] });
+    expect(isComplete(state)).toBe(true);
+  });
+
   it("requires whole positive traversal ticks", () => {
     const invalidGraph: RoadGraph = {
       ...oneEdgeGraph,
