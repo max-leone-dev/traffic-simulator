@@ -2,6 +2,8 @@
 
 Traffic Lab is a playful visual test app for exploring how route choices shape traffic on small graphs. Pick a graph and two strategies, then watch the same travelers move through independent simulations side by side. Congestion colors, expressive travelers, and a few post-run numbers make the behavior easier to inspect without requiring a deep understanding of the algorithms.
 
+[Try the live browser demo](https://max-leone-dev.github.io/traffic-simulator/).
+
 This is an explorable toy model, not a realistic traffic simulator, a rigorous benchmark, or a claim that one strategy is generally best.
 
 ## Try an experiment
