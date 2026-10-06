@@ -1,8 +1,10 @@
 import type {
+  CompletedTrip,
   DemandEvent,
   EdgeId,
   EdgeOccupancy,
   ExperimentConfig,
+  NodeId,
   RoutingAlgorithm,
   RoadGraph,
   SimulationState,
@@ -18,7 +20,6 @@ export const DEFAULT_CONFIG: ExperimentConfig = {
   maxArrivalChance: 0.95,
   minArrivalIntensity: 0.4,
   maxArrivalIntensity: 1,
-  congestionPenalty: 1.5,
 };
 
 function randomSource(seed: number): () => number {
@@ -32,7 +33,7 @@ function randomSource(seed: number): () => number {
   };
 }
 
-export function createDemandSchedule(config: ExperimentConfig): DemandEvent[] {
+export function createDemandSchedule(config: ExperimentConfig, terminals: readonly [NodeId, NodeId]): DemandEvent[] {
   const random = randomSource(config.seed);
   const events: DemandEvent[] = [];
   const totalTicks = config.rampTicks + config.holdTicks;
@@ -47,8 +48,8 @@ export function createDemandSchedule(config: ExperimentConfig): DemandEvent[] {
     events.push({
       id: `traveler-${travelerNumber}`,
       tick,
-      origin: reverse ? "finish" : "start",
-      destination: reverse ? "start" : "finish",
+      origin: reverse ? terminals[1] : terminals[0],
+      destination: reverse ? terminals[0] : terminals[1],
       neutralAt: 0.28 + travelerRoll * 0.25,
       upsetAt: 0.62 + travelerRoll * 0.3,
     });
@@ -84,13 +85,18 @@ export function createDemandSchedule(config: ExperimentConfig): DemandEvent[] {
 
 export function createSimulationState(graph: RoadGraph): SimulationState {
   const occupancy = new Map<string, EdgeOccupancy>();
-  for (const edge of graph.edges) occupancy.set(edge.id, { active: [], queue: [] });
+  for (const edge of graph.edges) {
+    if (!Number.isInteger(edge.travelTicks) || edge.travelTicks < 1) {
+      throw new Error(`Edge "${edge.id}" must have a positive integer travelTicks value.`);
+    }
+    occupancy.set(edge.id, { active: [], queue: [] });
+  }
   return {
     tick: 0,
     phase: "ramp",
     travelers: new Map(),
     occupancy,
-    metrics: { completedDuringDemand: 0, tripTimes: [] },
+    metrics: { completedDuringDemand: 0, completedTrips: [] },
   };
 }
 
@@ -113,8 +119,7 @@ function isValidRoute(graph: RoadGraph, route: readonly EdgeId[], request: TripR
 }
 
 function finishTraveler(state: SimulationState, traveler: Traveler, demandEnd: number): void {
-  const tripTime = state.tick - traveler.enteredAt;
-  state.metrics.tripTimes.push(tripTime);
+  state.metrics.completedTrips.push({ id: traveler.id, departedAt: traveler.enteredAt, completedAt: state.tick });
   if (state.tick < demandEnd) state.metrics.completedDuringDemand += 1;
   state.travelers.delete(traveler.id);
 }
@@ -132,8 +137,8 @@ export function stepSimulation(
     const occupancy = state.occupancy.get(edge.id)!;
     const remaining: Traveler[] = [];
     for (const traveler of occupancy.active) {
-      traveler.progress += 1 / edge.travelTicks;
-      if (traveler.progress < 1) {
+      traveler.edgeTicks += 1;
+      if (traveler.edgeTicks < edge.travelTicks) {
         remaining.push(traveler);
         continue;
       }
@@ -141,8 +146,8 @@ export function stepSimulation(
       if (traveler.edgeIndex >= traveler.edgeIds.length) {
         finishTraveler(state, traveler, demandEnd);
       } else {
-        // Progress belongs to one edge; the next edge starts at its origin.
-        traveler.progress = 0;
+        // Traversal ticks belong to one edge; the next edge starts at its origin.
+        traveler.edgeTicks = 0;
         const nextEdge = state.occupancy.get(traveler.edgeIds[traveler.edgeIndex]);
         nextEdge?.queue.push(traveler);
       }
@@ -161,7 +166,7 @@ export function stepSimulation(
       id: event.id,
       edgeIds: route,
       edgeIndex: 0,
-      progress: 0,
+      edgeTicks: 0,
       enteredAt: state.tick,
       neutralAt: event.neutralAt,
       upsetAt: event.upsetAt,
@@ -184,9 +189,36 @@ export function stepSimulation(
   else state.phase = "ramp";
 }
 
+function meanTripTime(trips: readonly CompletedTrip[]): number | null {
+  if (trips.length === 0) return null;
+  return trips.reduce((sum, trip) => sum + trip.completedAt - trip.departedAt, 0) / trips.length;
+}
+
 export function averageTripTime(state: SimulationState): number | null {
-  if (state.metrics.tripTimes.length === 0) return null;
-  return state.metrics.tripTimes.reduce((sum, duration) => sum + duration, 0) / state.metrics.tripTimes.length;
+  return meanTripTime(state.metrics.completedTrips);
+}
+
+export interface DeparturePeriodResult {
+  count: number;
+  averageTripTime: number | null;
+}
+
+export interface DeparturePeriodResults {
+  splitTick: number;
+  lighter: DeparturePeriodResult;
+  heavier: DeparturePeriodResult;
+}
+
+/** Group by departure, not completion, so queued trips remain in their original demand cohort. */
+export function departurePeriodResults(state: SimulationState, config: ExperimentConfig): DeparturePeriodResults {
+  const splitTick = Math.ceil(config.rampTicks / 2);
+  const lighter = state.metrics.completedTrips.filter((trip) => trip.departedAt < splitTick);
+  const heavier = state.metrics.completedTrips.filter((trip) => trip.departedAt >= splitTick);
+  return {
+    splitTick,
+    lighter: { count: lighter.length, averageTripTime: meanTripTime(lighter) },
+    heavier: { count: heavier.length, averageTripTime: meanTripTime(heavier) },
+  };
 }
 
 export function isComplete(state: SimulationState): boolean {

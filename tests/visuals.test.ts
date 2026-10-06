@@ -6,7 +6,7 @@ const traveler: Traveler = {
   id: "traveler-1",
   edgeIds: ["street"],
   edgeIndex: 0,
-  progress: 0,
+  edgeTicks: 0,
   enteredAt: 0,
   neutralAt: 0.3,
   upsetAt: 0.7,

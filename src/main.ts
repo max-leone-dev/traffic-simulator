@@ -1,38 +1,29 @@
 import "./style.css";
-import { createAlgorithmRegistry, congestionAware, dijkstra } from "./routing";
-import { bottleneckGraph } from "./scenario";
+import { capacityFirst, createAlgorithmRegistry, congestionAware, DEFAULT_CONGESTION_PENALTY, dijkstra, hotspotAvoidance } from "./routing";
+import { scenarios } from "./scenario";
+import type { Scenario } from "./scenario";
 import { connectionPressure, graphConnections } from "./graphView";
+import { createExperiment, experimentPhase, stepExperiment } from "./experiment";
+import type { ExperimentPane } from "./experiment";
 import { travelerBob, travelerFace } from "./visuals";
-import {
-  averageTripTime,
-  createDemandSchedule,
-  createSimulationState,
-  DEFAULT_CONFIG,
-  isComplete,
-  stepSimulation,
-} from "./simulation";
-import type { ExperimentConfig, RoutingAlgorithm, SimulationState } from "./model";
+import { averageTripTime, departurePeriodResults, isComplete } from "./simulation";
+import type { RoadGraph, RoutingAlgorithm } from "./model";
 
-const algorithms = createAlgorithmRegistry([dijkstra, congestionAware(DEFAULT_CONFIG.congestionPenalty)]);
-const demand = createDemandSchedule(DEFAULT_CONFIG);
-const graph = bottleneckGraph;
-const connections = graphConnections(graph);
-const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
-const edges = new Map(graph.edges.map((edge) => [edge.id, edge]));
+const algorithms = createAlgorithmRegistry([dijkstra, congestionAware(DEFAULT_CONGESTION_PENALTY), capacityFirst, hotspotAvoidance]);
+const selectedAlgorithms: RoutingAlgorithm[] = [algorithms[0], algorithms[1]];
+let selectedScenario: Scenario = scenarios[0];
+let experiment = createExperiment(selectedScenario, selectedAlgorithms);
+let graph: RoadGraph = selectedScenario.graph;
+let connections = graphConnections(graph);
+let nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+let edges = new Map(graph.edges.map((edge) => [edge.id, edge]));
 
-interface PaneState {
-  algorithm: RoutingAlgorithm;
-  simulation: SimulationState;
-}
-
-let panes: PaneState[] = [];
 let running = false;
 let lastFrame = 0;
 let accumulated = 0;
 let motionSeconds = 0;
 let frameRequest = 0;
 const tickMilliseconds = 600;
-const config: ExperimentConfig = DEFAULT_CONFIG;
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("App root element is missing.");
@@ -40,10 +31,17 @@ if (!app) throw new Error("App root element is missing.");
 app.innerHTML = `
   <main class="app-shell">
     <header class="topbar">
-      <div><div class="eyebrow">ROUTING EXPERIMENT · BOTTLENECK</div><h1>Traffic Lab</h1></div>
+      <div><div id="scenario-eyebrow" class="eyebrow">ROUTING EXPERIMENT · ${selectedScenario.label.toUpperCase()}</div><h1>Traffic Lab</h1></div>
       <div class="topbar-note">Same demand · two strategies</div>
     </header>
     <section class="workspace" aria-label="Traffic routing experiment">
+      <div class="scenario-bar">
+        <label for="scenario-select">Graph</label>
+        <select id="scenario-select" aria-label="Graph scenario">
+          ${scenarios.map((scenario) => `<option value="${scenario.id}">${scenario.label}</option>`).join("")}
+        </select>
+        <span id="scenario-description" class="scenario-description"></span>
+      </div>
       <div class="toolbar">
         <div class="ramp-box">
           <div class="ramp-title"><strong>Shared demand ramp</strong><span id="ramp-status" aria-live="polite">Ready to run</span></div>
@@ -56,6 +54,7 @@ app.innerHTML = `
         </div>
       </div>
       <div id="panes" class="panes" aria-label="Routing strategies"></div>
+      <p id="phase-note" class="phase-note" hidden>First half of the ramp versus second half plus hold; trips completed during drain remain in their departure group.</p>
       <div class="legend" aria-label="Congestion and face legend">
         <span class="legend-item"><i class="swatch idle"></i>Empty</span>
         <span class="legend-item"><i class="swatch cool"></i>Low crowding</span>
@@ -67,10 +66,39 @@ app.innerHTML = `
   </main>`;
 
 const panesRoot = app.querySelector<HTMLDivElement>("#panes")!;
+const phaseNote = app.querySelector<HTMLParagraphElement>("#phase-note")!;
 const statusText = app.querySelector<HTMLSpanElement>("#ramp-status")!;
 const ramp = app.querySelector<HTMLDivElement>(".ramp")!;
 const marker = app.querySelector<HTMLSpanElement>("#ramp-marker")!;
 const runButton = app.querySelector<HTMLButtonElement>("#run-button")!;
+const scenarioSelect = app.querySelector<HTMLSelectElement>("#scenario-select")!;
+const scenarioDescription = app.querySelector<HTMLSpanElement>("#scenario-description")!;
+const scenarioEyebrow = app.querySelector<HTMLDivElement>("#scenario-eyebrow")!;
+panesRoot.innerHTML = selectedAlgorithms.map((_, index) => `
+  <article class="pane">
+    <div class="pane-heading">
+      <label for="algorithm-${index}">Strategy ${index === 0 ? "A" : "B"}</label>
+      <select id="algorithm-${index}" aria-label="Strategy ${index === 0 ? "A" : "B"} algorithm">
+        ${algorithms.map((algorithm) => `<option value="${algorithm.id}">${algorithm.label}</option>`).join("")}
+      </select>
+    </div>
+    <p class="strategy-summary"></p>
+    <div class="pane-content"></div>
+  </article>`).join("");
+const algorithmSelects = [...panesRoot.querySelectorAll<HTMLSelectElement>(".pane-heading select")];
+const paneSummaries = [...panesRoot.querySelectorAll<HTMLParagraphElement>(".strategy-summary")];
+const paneContents = [...panesRoot.querySelectorAll<HTMLDivElement>(".pane-content")];
+algorithmSelects.forEach((select, index) => {
+  select.value = selectedAlgorithms[index].id;
+  paneSummaries[index].textContent = selectedAlgorithms[index].summary ?? "";
+  select.addEventListener("change", () => {
+    const algorithm = algorithms.find(({ id }) => id === select.value);
+    if (!algorithm || algorithm === selectedAlgorithms[index]) return;
+    selectedAlgorithms[index] = algorithm;
+    paneSummaries[index].textContent = algorithm.summary ?? "";
+    reset();
+  });
+});
 
 function reset(): void {
   running = false;
@@ -78,8 +106,19 @@ function reset(): void {
   accumulated = 0;
   motionSeconds = 0;
   lastFrame = 0;
-  panes = algorithms.map((algorithm) => ({ algorithm, simulation: createSimulationState(graph) }));
+  experiment = createExperiment(selectedScenario, selectedAlgorithms);
   render();
+}
+
+function selectScenario(scenario: Scenario): void {
+  selectedScenario = scenario;
+  graph = scenario.graph;
+  connections = graphConnections(graph);
+  nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  edges = new Map(graph.edges.map((edge) => [edge.id, edge]));
+  scenarioEyebrow.textContent = `ROUTING EXPERIMENT · ${scenario.label.toUpperCase()}`;
+  scenarioDescription.textContent = scenario.description;
+  reset();
 }
 
 function heatColor(pressure: number): string {
@@ -96,7 +135,7 @@ function travelerPosition(edgeId: string, progress: number, bob: number): [numbe
   return [from.x + (to.x - from.x) * progress, from.y + (to.y - from.y) * progress - bob];
 }
 
-function drawPane(pane: PaneState, index: number, elapsedSeconds: number, tickFraction: number): string {
+function drawPane(pane: ExperimentPane, elapsedSeconds: number, tickFraction: number, showPeriodResults: boolean): string {
   const state = pane.simulation;
   const links = connections.map((connection) => {
     const [from, to] = connection.nodes;
@@ -121,7 +160,7 @@ function drawPane(pane: PaneState, index: number, elapsedSeconds: number, tickFr
     if (displayIndex !== undefined && displayIndex >= 2) return "";
     const bob = travelerBob(traveler.id, elapsedSeconds, queueIndex < 0 ? 1 : 0.25);
     const position = queueIndex < 0
-      ? travelerPosition(edgeId, Math.min(traveler.progress + tickFraction / edge.travelTicks, 1), bob)
+      ? travelerPosition(edgeId, Math.min((traveler.edgeTicks + tickFraction) / edge.travelTicks, 1), bob)
       : travelerPosition(edgeId, 0, bob);
     if (displayIndex !== undefined) {
       position[0] += displayIndex === 0 ? -10 : 10;
@@ -136,27 +175,41 @@ function drawPane(pane: PaneState, index: number, elapsedSeconds: number, tickFr
   }).join("");
 
   const average = averageTripTime(state);
-  const title = index === 0 ? "Fixed shortest path" : "Congestion-aware";
-  const detail = index === 0 ? "Dijkstra" : "Load-aware shortest path";
-  return `<article class="pane">
-    <div class="pane-heading"><h2>${title}</h2><span class="algorithm-label">${detail}</span></div>
-    <svg class="scene" viewBox="0 0 600 300" role="img" aria-label="${title} graph showing congestion on each connection and traveler faces">
+  const title = pane.algorithm.label;
+  const annotations = selectedScenario.annotations.map(({ text, x, y }) =>
+    `<text class="route-label" x="${x}" y="${y}" text-anchor="middle">${text}</text>`,
+  ).join("");
+  const periodResults = showPeriodResults ? departurePeriodResults(state, selectedScenario.config) : null;
+  const periodCard = (label: string, result: { count: number; averageTripTime: number | null }) => `
+    <div class="period-card">
+      <span class="period-label">${label}</span>
+      <span class="period-value">${result.averageTripTime === null ? "—" : `${result.averageTripTime.toFixed(1)} s`}</span>
+      <span class="period-count">${result.count} ${result.count === 1 ? "trip" : "trips"}</span>
+    </div>`;
+  return `<svg class="scene" viewBox="0 0 600 300" role="img" aria-label="${title} on the ${selectedScenario.label} graph, showing congestion and traveler faces">
       ${links}${vertices}${travelers}${waiting}${labels}
-      <text class="route-label" x="300" y="274" text-anchor="middle">SHORT · BOTTLENECK</text>
-      <text class="route-label" x="300" y="105" text-anchor="middle">LONGER · OPEN</text>
+      ${annotations}
     </svg>
-    <div class="metrics"><span><strong>${average === null ? "—" : `${average.toFixed(1)} s`}</strong>avg trip time</span><span><strong>${state.metrics.completedDuringDemand}</strong>completed during demand</span></div>
-  </article>`;
+    <div class="metrics"><span><strong>${average === null ? "—" : average.toFixed(1)}</strong>avg trip time (sim s)</span><span><strong>${state.metrics.completedDuringDemand}</strong>completed during demand</span></div>
+    ${periodResults ? `<div class="phase-breakdown" aria-label="Trip time by departure period">
+      <div class="phase-breakdown-title">Avg trip time by departure</div>
+      ${periodCard("Lighter departures", periodResults.lighter)}
+      ${periodCard("Heavier departures", periodResults.heavier)}
+    </div>` : ""}`;
 }
 
 function render(elapsedSeconds = motionSeconds): void {
   const tickFraction = Math.min(accumulated / tickMilliseconds, 1);
-  panesRoot.innerHTML = panes.map((pane, index) => drawPane(pane, index, elapsedSeconds, tickFraction)).join("");
-  const rampProgress = Math.min((Math.min(panes[0]?.simulation.tick ?? 0, config.rampTicks) / config.rampTicks) * 100, 100);
+  const phase = experimentPhase(experiment);
+  experiment.panes.forEach((pane, index) => {
+    paneContents[index].innerHTML = drawPane(pane, elapsedSeconds, tickFraction, phase === "complete");
+  });
+  phaseNote.hidden = phase !== "complete";
+  const config = selectedScenario.config;
+  const rampProgress = Math.min((Math.min(experiment.panes[0]?.simulation.tick ?? 0, config.rampTicks) / config.rampTicks) * 100, 100);
   marker.style.left = `${rampProgress}%`;
   ramp.setAttribute("aria-valuenow", `${Math.round(rampProgress)}`);
-  const phase = panes[0]?.simulation.phase ?? "ramp";
-  statusText.textContent = !running && phase === "ramp" && (panes[0]?.simulation.tick ?? 0) === 0
+  statusText.textContent = !running && phase === "ramp" && (experiment.panes[0]?.simulation.tick ?? 0) === 0
     ? "Ready to run"
     : phase === "ramp"
       ? `Ramping up · ${Math.round(rampProgress)}%`
@@ -175,12 +228,10 @@ function advanceFrame(timestamp: number): void {
   accumulated += frameDelta;
   lastFrame = timestamp;
   while (accumulated >= tickMilliseconds) {
-    for (const pane of panes) {
-      stepSimulation(pane.simulation, graph, demand, pane.algorithm, config);
-    }
+    stepExperiment(experiment);
     accumulated -= tickMilliseconds;
   }
-  if (panes.every((pane) => isComplete(pane.simulation))) {
+  if (experiment.panes.every((pane) => isComplete(pane.simulation))) {
     running = false;
   }
   render(motionSeconds);
@@ -194,15 +245,17 @@ runButton.addEventListener("click", () => {
     render();
     return;
   }
-  if (panes.every((pane) => pane.simulation.phase === "complete")) reset();
+  if (experiment.panes.every((pane) => pane.simulation.phase === "complete")) reset();
   running = true;
   lastFrame = 0;
-  for (const pane of panes) {
-    stepSimulation(pane.simulation, graph, demand, pane.algorithm, config);
-  }
+  if (experiment.panes[0].simulation.tick === 0) stepExperiment(experiment);
   render();
   frameRequest = requestAnimationFrame(advanceFrame);
 });
 
+scenarioSelect.addEventListener("change", () => {
+  const scenario = scenarios.find(({ id }) => id === scenarioSelect.value);
+  if (scenario) selectScenario(scenario);
+});
 app.querySelector<HTMLButtonElement>("#reset-button")!.addEventListener("click", reset);
-reset();
+selectScenario(selectedScenario);

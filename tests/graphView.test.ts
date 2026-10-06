@@ -5,7 +5,7 @@ import { bottleneckGraph } from "../src/scenario";
 import type { Traveler } from "../src/model";
 
 function traveler(id: string): Traveler {
-  return { id, edgeIds: [], edgeIndex: 0, progress: 0, enteredAt: 0, neutralAt: 0.4, upsetAt: 0.8 };
+  return { id, edgeIds: [], edgeIndex: 0, edgeTicks: 0, enteredAt: 0, neutralAt: 0.4, upsetAt: 0.8 };
 }
 
 describe("graph projection", () => {
