@@ -172,6 +172,11 @@ export function stepSimulation(
       upsetAt: event.upsetAt,
     };
     state.travelers.set(traveler.id, traveler);
+    if (route.length === 0) {
+      // A trip already at its destination has no edge to queue on.
+      finishTraveler(state, traveler, demandEnd);
+      continue;
+    }
     state.occupancy.get(route[0])?.queue.push(traveler);
   }
 

@@ -39,7 +39,7 @@ Trips choose a route once, at departure, and do not reroute while moving. The si
 
 ## Reading the display
 
-- A single line represents each pair of directed edges. Its color shows the more crowded direction, while the two directions retain independent traffic state. A lone traveler reads as low crowding; additional travelers and queues raise the color. Faces react individually to that same pressure.
+- A single line represents each pair of directed edges. Its color shows the more crowded direction, while the two directions retain independent traffic state. A lone traveler reads as low crowding; additional travelers and queues raise the color. Faces react individually to that same pressure. The visual pressure excludes the first traveler on an edge; congestion-aware routing instead considers the full occupancy when a new trip chooses its route, so a green line can still affect that decision.
 - The demand ramp is shared. Average trip time and completions during the demand window are reported per strategy. One simulation tick represents one simulated second; playback takes 600 milliseconds per tick so the motion is easier to watch.
 - After both panes finish draining, each pane shows a compact split by departure time: the first half of the ramp (lighter demand) versus the second half plus hold (heavier demand). Each group shows its trip count and average simulated trip time. Trips that finish during drain remain in the group in which they departed; an empty group shows no average.
 
@@ -73,3 +73,7 @@ Add a `Scenario` entry in `src/scenario.ts` with a stable ID, graph, two termina
 ## AI-assisted development
 
 This project is being developed with AI-assisted code generation and collaboration. Generated changes are reviewed and tested; the design and quality bar are not delegated to the generator.
+
+## License
+
+Traffic Lab is available under the [MIT License](LICENSE).
